@@ -53,19 +53,36 @@ function detectCategory(filename, text) {
 function extractMetadata(text, category, filename) {
   const meta = {}
 
-  // Passenger names: look for "Passenger:", "Name:", or "SOHIL", "RACHNA" patterns
-  const passengerPatterns = [
-    /(?:passenger|name|travell?er)[:\s]+([A-Z][a-z]+ [A-Z][a-z]+)/gi,
-    /\b(MR|MRS|MS|DR)\.?\s+([A-Z][A-Z\s]+)/g,
-  ]
+  // Passenger names: extract exact full names as written in source — no surname inference or merging
   const passengers = new Set()
-  for (const pattern of passengerPatterns) {
-    let m
-    while ((m = pattern.exec(text)) !== null) {
-      const name = (m[2] || m[1]).trim().replace(/\s+/g, ' ')
-      if (name.length > 3 && name.length < 50) passengers.add(name)
-    }
+
+  // Pattern 1: "Passenger: John Smith" / "Name: First Last" (mixed-case, already formatted)
+  const mixedCasePattern = /(?:passenger|name|travell?er)[:\s]+([A-Z][a-z]+ [A-Z][a-z]+)/gi
+  let mx
+  while ((mx = mixedCasePattern.exec(text)) !== null) {
+    const name = mx[1].trim().replace(/\s+/g, ' ')
+    if (name.length > 3 && name.length < 50) passengers.add(name)
   }
+
+  // Pattern 2: Title-prefixed ALL-CAPS names e.g. "MS RACHNA RACHNA", "MR SOHIL GUPTA"
+  // Uses matchAll so each title gets its own independent match (no shared greedy state).
+  // After capture, we truncate at the next embedded title to prevent cross-passenger merging.
+  const titleMatches = [...text.matchAll(/\b(?:MR|MRS|MS|DR)\.?\s+([A-Z]+(?:\s+[A-Z]+)*)/g)]
+  for (const match of titleMatches) {
+    let namePart = match[1]
+    // Stop at any embedded title word (e.g. "SOHIL GUPTA MS RACHNA" → "SOHIL GUPTA")
+    const stopIdx = namePart.search(/\b(?:MR|MRS|MS|DR)\b/i)
+    if (stopIdx !== -1) namePart = namePart.slice(0, stopIdx)
+    // Limit to 3 words max (first [middle] last); require at least 2
+    const words = namePart.trim().split(/\s+/).filter(Boolean).slice(0, 3)
+    if (words.length < 2) continue
+    // Convert ALL-CAPS to Title Case exactly as extracted — surname preserved verbatim
+    const name = words
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(' ')
+    if (name.length > 3 && name.length < 50) passengers.add(name)
+  }
+
   if (passengers.size > 0) meta.passengers = [...passengers].slice(0, 4)
 
   if (category === 'flights') {
