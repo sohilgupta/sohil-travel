@@ -8,16 +8,17 @@ export async function GET() {
     const supabase = createServerClient()
     const authed = await isAuthenticated()
 
-    const { data: rows, error } = await supabase
+    const { data: metaRow, error } = await supabase
       .from('trip_metadata')
       .select('*')
       .limit(1)
+      .maybeSingle()
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    const row = rows?.[0] ?? {}
+    const row = (metaRow ?? {}) as Record<string, unknown>
 
     // Unauthenticated: return only what the unlock preview needs (no PII)
     if (!authed) {

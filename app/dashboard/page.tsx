@@ -11,23 +11,23 @@ async function getDashboardData() {
   const supabase = createServerClient()
 
   const [metaRes, countRes] = await Promise.all([
-    supabase.from('trip_metadata').select('*').limit(1),
+    supabase.from('trip_metadata').select('*').limit(1).maybeSingle(),
     supabase.from('documents').select('category'),
   ])
 
-  const row = metaRes.data?.[0] as Record<string, unknown> | undefined
+  const row = (metaRes.data ?? {}) as Record<string, unknown>
 
   const trip: Partial<TripData> & Record<string, unknown> = {
-    trip_name: (row?.trip_name as string) ?? null,
-    start_date: (row?.start_date as string) ?? null,
-    end_date: (row?.end_date as string) ?? null,
-    destinations: (row?.destinations as string[]) ?? [],
-    passengers: (row?.passengers as string[]) ?? [],
-    primary_airline: (row?.primary_airline as string) ?? null,
-    duration_days: (row?.duration_days as number) ?? null,
-    total_flights: (row?.total_flights as number) ?? 0,
-    total_activities: (row?.total_activities as number) ?? 0,
-    total_hotels: (row?.total_hotels as number) ?? 0,
+    trip_name:        (row.trip_name as string)      ?? null,
+    start_date:       (row.start_date as string)     ?? null,
+    end_date:         (row.end_date as string)       ?? null,
+    destinations:     (row.destinations as string[]) ?? [],
+    passengers:       (row.passengers as string[])   ?? [],
+    primary_airline:  null,
+    duration_days:    null,
+    total_flights:    0,
+    total_activities: 0,
+    total_hotels:     0,
   }
 
   // Build category counts

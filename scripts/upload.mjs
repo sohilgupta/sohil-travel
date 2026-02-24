@@ -435,12 +435,30 @@ async function main() {
   const tripMeta = buildTripMetadata(allDocs)
   console.log(tripMeta)
 
-  for (const [key, value] of Object.entries(tripMeta)) {
-    await supabase.from('trip_metadata').upsert(
-      { key, value: value ?? null },
-      { onConflict: 'key' }
-    )
+  // trip_metadata holds a single wide row — always update it, never insert duplicates
+  const { data: existing } = await supabase
+    .from('trip_metadata')
+    .select('id')
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const metaPayload = {
+    trip_name:       tripMeta.trip_name,
+    start_date:      tripMeta.start_date,
+    end_date:        tripMeta.end_date,
+    destinations:    tripMeta.destinations,
+    passengers:      tripMeta.passengers,
+    total_documents: allDocs.length,
+    updated_at:      new Date().toISOString(),
   }
+
+  const { error: metaError } = existing?.id
+    ? await supabase.from('trip_metadata').update(metaPayload).eq('id', existing.id)
+    : await supabase.from('trip_metadata').insert(metaPayload)
+
+  if (metaError) console.error('   ❌ Trip metadata save failed:', metaError.message)
+  else console.log('   ✅ Trip metadata saved')
 
   console.log(`\n✅ Done! ${allDocs.length}/${pdfs.length} documents uploaded.`)
   console.log(`   Trip: ${tripMeta.trip_name}`)
