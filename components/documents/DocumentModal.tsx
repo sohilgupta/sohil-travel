@@ -27,8 +27,12 @@ export function DocumentModal({ documentId, onClose }: DocumentModalProps) {
     setError(null)
 
     fetch(`/api/document/${documentId}`)
-      .then((r) => r.json())
+      .then((r) => {
+        if (r.status === 401) { window.location.href = '/unlock'; return null }
+        return r.json()
+      })
       .then((data) => {
+        if (!data) return
         if (data.url) {
           setUrl(data.url)
           setFilename(data.filename || 'document.pdf')

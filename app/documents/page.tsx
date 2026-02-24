@@ -35,6 +35,7 @@ function DocumentsContent() {
       if (search.trim()) params.set('search', search.trim())
 
       const res = await fetch(`/api/documents?${params}`)
+      if (res.status === 401) { window.location.href = '/unlock'; return }
       const data = await res.json()
       setDocuments(Array.isArray(data) ? data : [])
     } catch {

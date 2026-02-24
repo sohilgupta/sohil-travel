@@ -1,5 +1,3 @@
-import { cookies } from 'next/headers'
-import { redirect } from 'next/navigation'
 import { createServerClient } from '@/lib/supabase/server'
 import { HeroCard } from '@/components/dashboard/HeroCard'
 import { CategoryTiles } from '@/components/dashboard/CategoryTiles'
@@ -13,19 +11,24 @@ async function getDashboardData() {
   const supabase = createServerClient()
 
   const [metaRes, countRes] = await Promise.all([
-    supabase.from('trip_metadata').select('key, value'),
+    supabase.from('trip_metadata').select('*').limit(1),
     supabase.from('documents').select('category'),
   ])
 
-  const trip: Partial<TripData> & Record<string, unknown> = {
-    start_date: null, end_date: null, destinations: [], passengers: [],
-    primary_airline: null, duration_days: null, total_flights: 0,
-    total_activities: 0, total_hotels: 0, trip_name: null,
-  }
+  const row = metaRes.data?.[0] as Record<string, unknown> | undefined
 
-  metaRes.data?.forEach(({ key, value }) => {
-    trip[key] = value
-  })
+  const trip: Partial<TripData> & Record<string, unknown> = {
+    trip_name: (row?.trip_name as string) ?? null,
+    start_date: (row?.start_date as string) ?? null,
+    end_date: (row?.end_date as string) ?? null,
+    destinations: (row?.destinations as string[]) ?? [],
+    passengers: (row?.passengers as string[]) ?? [],
+    primary_airline: (row?.primary_airline as string) ?? null,
+    duration_days: (row?.duration_days as number) ?? null,
+    total_flights: (row?.total_flights as number) ?? 0,
+    total_activities: (row?.total_activities as number) ?? 0,
+    total_hotels: (row?.total_hotels as number) ?? 0,
+  }
 
   // Build category counts
   const counts: Partial<Record<DocumentCategory, number>> = {}
@@ -46,9 +49,6 @@ async function getDashboardData() {
 }
 
 export default async function DashboardPage() {
-  const cookieStore = await cookies()
-  if (!cookieStore.get('trip_session')?.value) redirect('/unlock')
-
   const { trip, categories } = await getDashboardData()
 
   return (

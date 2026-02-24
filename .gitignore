@@ -33,6 +33,12 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# deployment scripts with secrets
+set-env-vars.html
+deploy-to-vercel.html
+upload-pdfs.html
+add-env.sh
+
 # vercel
 .vercel
 

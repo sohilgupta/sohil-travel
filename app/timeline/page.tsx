@@ -15,7 +15,10 @@ export default function TimelinePage() {
 
   useEffect(() => {
     fetch('/api/timeline')
-      .then((r) => r.json())
+      .then((r) => {
+        if (r.status === 401) { window.location.href = '/unlock'; return [] }
+        return r.json()
+      })
       .then((data) => setTimeline(Array.isArray(data) ? data : []))
       .catch(() => setTimeline([]))
       .finally(() => setLoading(false))

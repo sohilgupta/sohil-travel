@@ -1,8 +1,13 @@
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase/server'
+import { isAuthenticated } from '@/lib/auth'
 import { TimelineEvent, TimelineItem, DocumentCategory } from '@/lib/types'
 
 export async function GET() {
+  if (!(await isAuthenticated())) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   try {
     const supabase = createServerClient()
 

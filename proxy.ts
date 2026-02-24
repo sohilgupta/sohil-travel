@@ -6,24 +6,18 @@ const SESSION_COOKIE = 'trip_session'
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
+  const session = request.cookies.get(SESSION_COOKIE)
+  const isLoggedIn = session?.value === 'authenticated'
 
+  // Protect pages that require authentication
   const isProtected = PROTECTED_PATHS.some((p) => pathname.startsWith(p))
-
-  if (isProtected) {
-    const session = request.cookies.get(SESSION_COOKIE)
-    if (!session?.value) {
-      const url = new URL('/unlock', request.url)
-      url.searchParams.set('from', pathname)
-      return NextResponse.redirect(url)
-    }
+  if (isProtected && !isLoggedIn) {
+    return NextResponse.redirect(new URL('/unlock', request.url))
   }
 
-  // Already authenticated — skip unlock page
-  if (pathname === '/unlock') {
-    const session = request.cookies.get(SESSION_COOKIE)
-    if (session?.value) {
-      return NextResponse.redirect(new URL('/dashboard', request.url))
-    }
+  // Redirect authenticated users away from unlock page
+  if (pathname === '/unlock' && isLoggedIn) {
+    return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
   return NextResponse.next()
