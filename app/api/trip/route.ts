@@ -23,11 +23,11 @@ export async function GET() {
     // Unauthenticated: return only what the unlock preview needs (no PII)
     if (!authed) {
       return NextResponse.json({
-        trip_name: row.trip_name ?? null,
-        start_date: row.start_date ?? null,
-        end_date: row.end_date ?? null,
-        destinations: row.destinations ?? [],
-        primary_airline: row.primary_airline ?? null,
+        trip_name:       (row.trip_name as string)      ?? null,
+        start_date:      (row.start_date as string)     ?? null,
+        end_date:        (row.end_date as string)       ?? null,
+        destinations:    (row.destinations as string[]) ?? [],
+        primary_airline: null,
       }, {
         headers: { 'Cache-Control': 's-maxage=60, stale-while-revalidate' },
       })
@@ -35,16 +35,16 @@ export async function GET() {
 
     // Authenticated: return full trip data
     const trip: Partial<TripData> = {
-      trip_name: row.trip_name ?? null,
-      start_date: row.start_date ?? null,
-      end_date: row.end_date ?? null,
-      destinations: row.destinations ?? [],
-      passengers: row.passengers ?? [],
-      primary_airline: row.primary_airline ?? null,
-      duration_days: row.duration_days ?? null,
-      total_flights: row.total_flights ?? 0,
-      total_activities: row.total_activities ?? 0,
-      total_hotels: row.total_hotels ?? 0,
+      trip_name:        (row.trip_name as string)      ?? null,
+      start_date:       (row.start_date as string)     ?? null,
+      end_date:         (row.end_date as string)       ?? null,
+      destinations:     (row.destinations as string[]) ?? [],
+      passengers:       (row.passengers as string[])   ?? [],
+      primary_airline:  null,
+      duration_days:    null,
+      total_flights:    0,
+      total_activities: 0,
+      total_hotels:     0,
     }
 
     return NextResponse.json(trip, {
