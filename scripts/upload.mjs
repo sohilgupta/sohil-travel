@@ -56,8 +56,8 @@ function extractMetadata(text, category, filename) {
   // Passenger names: extract exact full names as written in source — no surname inference or merging
   const passengers = new Set()
 
-  // Pattern 1: "Passenger: John Smith" / "Name: First Last" (mixed-case, already formatted)
-  const mixedCasePattern = /(?:passenger|name|travell?er)[:\s]+([A-Z][a-z]+ [A-Z][a-z]+)/gi
+  // Pattern 1: "Passenger: John Smith" / "Name: First Last" — colon required to avoid boilerplate
+  const mixedCasePattern = /(?:passenger|name|travell?er):\s+([A-Z][a-z]+ [A-Z][a-z]+)/gi
   let mx
   while ((mx = mixedCasePattern.exec(text)) !== null) {
     const name = mx[1].trim().replace(/\s+/g, ' ')
@@ -382,8 +382,14 @@ async function main() {
       const event_date = extractEventDate(text, filename)
       const title = generateTitle(filename, category, meta)
 
-      // Storage path: category/filename
-      const storagePath = `${category}/${filename}`
+      // Storage path: category/sanitized-filename
+      // Supabase Storage only allows A-Z a-z 0-9 - _ . /
+      const safeFilename = filename
+        .replace(/[|,&'()]/g, '')         // strip symbols
+        .replace(/[\s]+/g, '_')           // spaces → underscores
+        .replace(/[^A-Za-z0-9._\-/]/g, '-') // anything else → dash
+        .replace(/-{2,}/g, '-')           // collapse consecutive dashes
+      const storagePath = `${category}/${safeFilename}`
 
       // Upload to Supabase Storage
       const { error: uploadError } = await supabase.storage
