@@ -32,19 +32,45 @@ const supabase = createClient(
 const BUCKET = 'travel-documents'
 
 // ── Category detection ────────────────────────────────────────────────────────
-function detectCategory(filename, text) {
+function detectCategory(filename, text, folderHint) {
+  // folderHint: parent folder name (e.g. "Activities", "Flights", "Car Rental")
+  // When provided, use it as authoritative ground truth
+  if (folderHint) {
+    const h = folderHint.toLowerCase()
+    if (h === 'flights') return 'flights'
+    if (h === 'activities') return 'activities'
+    if (h === 'car rental') return 'car_rental'
+    if (h === 'hotels') return 'hotels'
+    if (h === 'insurance') return 'insurance'
+    if (h === 'personal docs' || h === 'personal') return 'misc'
+  }
+
   const f = filename.toLowerCase()
   const t = (text || '').toLowerCase()
   const combined = f + ' ' + t.slice(0, 2000)
 
-  if (/flight|airline|boarding|pnr|departure|arrival|airways|depart|itinerary.*flight/i.test(combined)) {
-    if (/\b[A-Z]{2}\d{3,4}\b/.test(text) || /\bPNR\b/i.test(combined)) return 'flights'
+  // Flights: match flight numbers even when surrounded by underscores/dashes
+  const hasFlightNumber = /(?:^|[\s_\-])([A-Z]{2}\d{3,4})(?:$|[\s_\-.])/i.test(filename) ||
+    /\b[A-Z]{2}\d{3,4}\b/.test(text)
+  const hasPNR = /(?:^|[\s_\-])PNR[-_]/i.test(filename) || /\bPNR\b/i.test(combined)
+  const hasFlightKeywords = /flight|airline|boarding|departure|arrival|airways|depart/i.test(combined)
+  // Airport route patterns like DEL-SYD, AKL-DEL (3-letter IATA codes)
+  const hasAirportRoute = /\b[A-Z]{3}-[A-Z]{3}\b/.test(filename)
+
+  if (hasFlightKeywords || hasFlightNumber || hasPNR || hasAirportRoute) {
+    if (hasFlightNumber || hasPNR || hasAirportRoute) return 'flights'
   }
+
+  // Activities checked BEFORE hotels to avoid misclassifying activity PDFs
+  // that mention hotel pick-up/accommodation in their text
+  if (/tour|cruise|activity|zoo|safari|museum|park|ticket|booking|excursion|transfer|stargazing|hobbiton|milford|glacier|helicopter|sea.world|movie.world|waitomo|scenic|skydive|bungee|kayak|snorkel|dive/i.test(combined)) return 'activities'
+
   if (/hotel|resort|inn|lodge|accommodation|check.in|check.out|room|nights?\b/i.test(combined)) return 'hotels'
-  if (/rental|car.hire|hertz|avis|enterprise|budget|thrifty|dollar|sixt|pickup|pick.up|drop.?off/i.test(combined)) return 'car_rental'
+  if (/rental|car.hire|hertz|avis|enterprise|budget|thrifty|dollar|sixt|drop.?off/i.test(combined)) return 'car_rental'
   if (/insurance|travel.protect|policy|cover|claim/i.test(combined)) return 'insurance'
-  if (/tour|cruise|activity|zoo|safari|museum|park|ticket|booking|excursion|transfer|stargazing|hobbiton|milford|glacier|helicopter|sea.world|movie.world/i.test(combined)) return 'activities'
-  if (/flight|airline|boarding|pnr|departure|arrival|airways/i.test(combined)) return 'flights'
+
+  // Fallback flight check (no number/PNR but keywords present)
+  if (hasFlightKeywords) return 'flights'
 
   return 'misc'
 }
@@ -364,7 +390,10 @@ async function main() {
 
   for (const pdfPath of pdfs) {
     const filename = basename(pdfPath)
-    console.log(`📄 Processing: ${filename}`)
+    // Use the immediate parent folder name as a category hint
+    const parentFolder = basename(dirname(pdfPath))
+    const folderHint = parentFolder !== basename(folder) ? parentFolder : null
+    console.log(`📄 Processing: ${filename}${folderHint ? ` [folder: ${folderHint}]` : ''}`)
 
     try {
       // Parse PDF text
@@ -377,7 +406,7 @@ async function main() {
         console.warn(`   ⚠️  Could not parse text: ${e.message}`)
       }
 
-      const category = detectCategory(filename, text)
+      const category = detectCategory(filename, text, folderHint)
       const meta = extractMetadata(text, category, filename)
       const event_date = extractEventDate(text, filename)
       const title = generateTitle(filename, category, meta)
