@@ -6,8 +6,14 @@ import { checkOnAccess } from '@/lib/google-drive/monitor'
 
 export async function GET() {
   // Trigger Drive change check after the response is sent — zero latency impact.
-  // Skipped silently when Drive credentials are not configured (e.g. local dev).
-  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON && process.env.GOOGLE_DRIVE_FOLDER_ID) {
+  // Only runs in production (Vercel). In local dev after() can cause looping
+  // page reloads because Turbopack treats the long-running async task as a
+  // pending request; use /api/sync-drive for manual testing locally.
+  if (
+    process.env.NODE_ENV === 'production' &&
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON &&
+    process.env.GOOGLE_DRIVE_FOLDER_ID
+  ) {
     after(() => checkOnAccess())
   }
 

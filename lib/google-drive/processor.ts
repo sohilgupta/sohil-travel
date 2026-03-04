@@ -311,9 +311,14 @@ export async function processFile(file: DriveFileRecord): Promise<ProcessResult>
     const action = existing ? 'updated' : 'inserted'
 
     if (existing) {
-      await supabase.from('documents').update(docRecord).eq('drive_file_id', fileId)
+      const { error: dbError } = await supabase
+        .from('documents')
+        .update(docRecord)
+        .eq('drive_file_id', fileId)
+      if (dbError) throw new Error(`DB update failed: ${dbError.message}`)
     } else {
-      await supabase.from('documents').insert(docRecord)
+      const { error: dbError } = await supabase.from('documents').insert(docRecord)
+      if (dbError) throw new Error(`DB insert failed: ${dbError.message}`)
     }
 
     // 10. Recompute trip_metadata aggregate
