@@ -1,9 +1,16 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { createServerClient } from '@/lib/supabase/server'
 import { isAuthenticated } from '@/lib/auth'
 import { TripData } from '@/lib/types'
+import { checkOnAccess } from '@/lib/google-drive/monitor'
 
 export async function GET() {
+  // Trigger Drive change check after the response is sent — zero latency impact.
+  // Skipped silently when Drive credentials are not configured (e.g. local dev).
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON && process.env.GOOGLE_DRIVE_FOLDER_ID) {
+    after(() => checkOnAccess())
+  }
+
   try {
     const supabase = createServerClient()
     const authed = await isAuthenticated()
