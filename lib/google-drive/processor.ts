@@ -4,13 +4,15 @@
  * For each Drive file:
  *  1. Validate MIME type against allowlist
  *  2. Check file size against limit
- *  3. Download content
- *  4. Compute SHA-256 hash for deduplication
- *  5. Skip if hash unchanged
+ *  3. Early skip using Drive's md5Checksum (no download needed for unchanged binary files)
+ *  4. Download content (only when needed)
+ *  5. Compute version hash (Drive md5 for binary, SHA-256 for exported Workspace docs)
  *  6. Parse PDF metadata
- *  7. Upload to Supabase private bucket
- *  8. Upsert document record in DB
- *  9. Recompute trip_metadata aggregate
+ *  7. Classify using folder hint first, then filename/text patterns
+ *  8. Upload to Supabase private bucket
+ *  9. Upsert document record — stores drive_file_id + version hash in metadata JSONB
+ *     (no schema migration required — avoids dependency on drive_file_id column)
+ * 10. Recompute trip_metadata aggregate
  */
 
 import { createHash } from 'crypto'
@@ -214,10 +216,29 @@ export async function processFile(file: DriveFileRecord): Promise<ProcessResult>
   }
 
   try {
-    const drive = getDriveClient()
     const supabase = createServerClient()
 
-    // 3. Download file content
+    // 3. Look up existing record by drive_file_id stored in metadata JSONB.
+    //    This approach works WITHOUT any schema migration — no drive_file_id column needed.
+    //    PostgREST supports ->> operator to filter by JSONB text fields.
+    const { data: existing } = await supabase
+      .from('documents')
+      .select('id, metadata, storage_path')
+      .eq('metadata->>drive_file_id' as string, fileId)
+      .maybeSingle()
+
+    const existingHash = (existing?.metadata as Record<string, unknown> | null)
+      ?.drive_version_hash as string | undefined
+
+    // 4. Early skip using Drive's native md5Checksum (no download required).
+    //    Binary files (PDF, Word) always have this. Google Workspace docs do not.
+    const driveChecksum = file.md5Checksum
+    if (driveChecksum && existingHash === driveChecksum) {
+      return { fileId, filename, action: 'skipped', reason: 'Content unchanged (Drive md5 match)' }
+    }
+
+    // 5. Download file content (needed for new/changed files, or Google Workspace docs)
+    const drive = getDriveClient()
     const downloadMime = exportMime(mimeType)
     let fileBuffer: Buffer
 
@@ -246,21 +267,17 @@ export async function processFile(file: DriveFileRecord): Promise<ProcessResult>
       }
     }
 
-    // 4. Compute SHA-256 hash
-    const versionHash = computeHash(fileBuffer)
+    // 6. Determine version hash.
+    //    Binary files: use Drive's md5 (already verified above if it existed).
+    //    Exported Google Docs: compute SHA-256 from the downloaded PDF bytes.
+    const versionHash = driveChecksum ?? computeHash(fileBuffer)
 
-    // 5. Check if already processed with same hash
-    const { data: existing } = await supabase
-      .from('documents')
-      .select('id, drive_version_hash')
-      .eq('drive_file_id', fileId)
-      .maybeSingle()
-
-    if (existing?.drive_version_hash === versionHash) {
-      return { fileId, filename, action: 'skipped', reason: 'Content unchanged (hash match)' }
+    // Secondary hash check for Google Workspace docs (where driveChecksum is null)
+    if (!driveChecksum && existingHash === versionHash) {
+      return { fileId, filename, action: 'skipped', reason: 'Content unchanged (sha256 match)' }
     }
 
-    // 6. Parse PDF text for metadata extraction
+    // 7. Parse PDF text for metadata extraction
     let parsedText = ''
     try {
       const parsed = await pdf(fileBuffer)
@@ -270,12 +287,12 @@ export async function processFile(file: DriveFileRecord): Promise<ProcessResult>
       parsedText = ''
     }
 
-    // 7. Classify and extract metadata
+    // 8. Classify and extract metadata
     // folderHint (from Drive subfolder name) takes priority over text patterns
     const category = classifyDocument(filename, parsedText, file.folderHint)
     const metadata = extractMetadata(parsedText, category)
 
-    // 8. Upload to Supabase private bucket — never public
+    // 9. Upload to Supabase private bucket — never public
     const path = storagePath(fileId, filename)
     const { error: uploadError } = await supabase.storage
       .from('travel-documents')
@@ -288,24 +305,27 @@ export async function processFile(file: DriveFileRecord): Promise<ProcessResult>
       throw new Error(`Storage upload failed: ${uploadError.message}`)
     }
 
-    // Extract event date from metadata
+    // Extract event date from metadata — must be a YYYY-MM-DD date string.
+    // departure_time and arrival_time are HH:MM strings, NOT dates — exclude them.
+    const DATE_RE = /^\d{4}-\d{2}-\d{2}/
     const eventDate =
-      (metadata.departure_time as string | undefined) ??
-      (metadata.check_in as string | undefined) ??
-      (metadata.pickup_date as string | undefined) ??
-      null
+      [metadata.check_in, metadata.pickup_date]
+        .find(v => typeof v === 'string' && DATE_RE.test(v)) ?? null
 
-    // 9. Upsert document record
+    // 10. Upsert document record.
+    //     drive_file_id and drive_version_hash go into the metadata JSONB field
+    //     so no schema migration is needed. The ->> filter above finds existing records.
     const docRecord = {
       filename,
       storage_path: path,
       category,
       title: filename.replace(/\.[^.]+$/, ''),
-      metadata,
+      metadata: {
+        ...metadata,
+        drive_file_id: fileId,
+        drive_version_hash: versionHash,
+      },
       event_date: eventDate,
-      drive_file_id: fileId,
-      drive_version_hash: versionHash,
-      drive_modified_time: file.modifiedTime,
     }
 
     const action = existing ? 'updated' : 'inserted'
@@ -314,14 +334,14 @@ export async function processFile(file: DriveFileRecord): Promise<ProcessResult>
       const { error: dbError } = await supabase
         .from('documents')
         .update(docRecord)
-        .eq('drive_file_id', fileId)
+        .eq('metadata->>drive_file_id' as string, fileId)
       if (dbError) throw new Error(`DB update failed: ${dbError.message}`)
     } else {
       const { error: dbError } = await supabase.from('documents').insert(docRecord)
       if (dbError) throw new Error(`DB insert failed: ${dbError.message}`)
     }
 
-    // 10. Recompute trip_metadata aggregate
+    // 11. Recompute trip_metadata aggregate
     await recomputeTripMetadata()
 
     return { fileId, filename, action }
@@ -337,10 +357,11 @@ export async function deleteFile(fileId: string, filename: string): Promise<Proc
   try {
     const supabase = createServerClient()
 
+    // Find the record using drive_file_id stored in metadata JSONB
     const { data: existing } = await supabase
       .from('documents')
       .select('id, storage_path')
-      .eq('drive_file_id', fileId)
+      .eq('metadata->>drive_file_id' as string, fileId)
       .maybeSingle()
 
     if (!existing) {
@@ -351,7 +372,7 @@ export async function deleteFile(fileId: string, filename: string): Promise<Proc
     await supabase.storage.from('travel-documents').remove([existing.storage_path])
 
     // Remove from DB
-    await supabase.from('documents').delete().eq('drive_file_id', fileId)
+    await supabase.from('documents').delete().eq('id', existing.id)
 
     // Recompute trip_metadata after deletion
     await recomputeTripMetadata()
