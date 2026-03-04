@@ -13,7 +13,25 @@ import { getDriveClient, getDriveFolderId } from './client'
 import { createServerClient } from '@/lib/supabase/server'
 import { processFile, deleteFile } from './processor'
 import { DriveFileRecord, DriveChangeRecord, SyncSummary } from './types'
+import { DocumentCategory } from '@/lib/types'
 import { drive_v3 } from 'googleapis'
+
+// ─── Folder-name → category mapping ─────────────────────────────────────────
+
+const FOLDER_CATEGORY_PATTERNS: Array<{ pattern: RegExp; category: DocumentCategory }> = [
+  { pattern: /flight|boarding|airline/i,          category: 'flights' },
+  { pattern: /hotel|resort|accommodation/i,        category: 'hotels' },
+  { pattern: /car.?rental|vehicle/i,               category: 'car_rental' },
+  { pattern: /activit|tour|excursion/i,            category: 'activities' },
+  { pattern: /insurance|policy/i,                  category: 'insurance' },
+]
+
+function classifyFolderName(name: string): DocumentCategory | null {
+  for (const { pattern, category } of FOLDER_CATEGORY_PATTERNS) {
+    if (pattern.test(name)) return category
+  }
+  return null
+}
 
 const SYNC_STATE_TABLE = 'drive_sync_state'
 
@@ -58,14 +76,19 @@ function toFileRecord(f: drive_v3.Schema$File): DriveFileRecord {
 /**
  * List all non-folder files recursively within the monitored folder using BFS.
  * Drive API only supports `in parents` (direct children), so we walk the tree.
+ * Tracks each folder's inferred DocumentCategory so files can be tagged with folderHint.
  */
 async function listFolderFiles(folderId: string): Promise<DriveFileRecord[]> {
   const drive = getDriveClient()
   const allFiles: DriveFileRecord[] = []
-  const queue = [folderId] // BFS queue of folder IDs to scan
+
+  // Each queue entry carries the folder ID + the inherited category hint
+  const queue: Array<{ id: string; hint: DocumentCategory | null }> = [
+    { id: folderId, hint: null },
+  ]
 
   while (queue.length > 0) {
-    const currentId = queue.shift()!
+    const { id: currentId, hint: parentHint } = queue.shift()!
     let pageToken: string | undefined
 
     do {
@@ -80,9 +103,15 @@ async function listFolderFiles(folderId: string): Promise<DriveFileRecord[]> {
 
       for (const file of res.data.files ?? []) {
         if (file.mimeType === 'application/vnd.google-apps.folder') {
-          if (file.id) queue.push(file.id) // recurse into subfolders
+          if (file.id) {
+            // Derive hint from subfolder name; fall back to parent's hint
+            const childHint = classifyFolderName(file.name ?? '') ?? parentHint
+            queue.push({ id: file.id, hint: childHint })
+          }
         } else {
-          allFiles.push(toFileRecord(file))
+          const record = toFileRecord(file)
+          if (parentHint) record.folderHint = parentHint
+          allFiles.push(record)
         }
       }
 
@@ -93,36 +122,51 @@ async function listFolderFiles(folderId: string): Promise<DriveFileRecord[]> {
   return allFiles
 }
 
+interface FolderInfo {
+  /** All folder IDs in the hierarchy (used to filter the change feed) */
+  ids: Set<string>
+  /** Maps folder ID → DocumentCategory inferred from its name */
+  categoryMap: Map<string, DocumentCategory>
+}
+
 /**
- * Returns the set of all folder IDs in the monitored hierarchy
- * (root + every subfolder at any depth) using BFS.
- * Used to filter the Drive change feed to only our folder tree.
+ * Returns every folder ID in the monitored hierarchy plus a category map
+ * so files can be tagged with the authoritative Drive-subfolder category.
  */
-async function getFolderHierarchyIds(folderId: string): Promise<Set<string>> {
+async function getFolderInfo(folderId: string): Promise<FolderInfo> {
   const drive = getDriveClient()
   const ids = new Set<string>([folderId])
-  const queue = [folderId]
+  const categoryMap = new Map<string, DocumentCategory>()
+
+  // Queue carries { id, hint } — root has no hint yet
+  const queue: Array<{ id: string; hint: DocumentCategory | null }> = [
+    { id: folderId, hint: null },
+  ]
 
   while (queue.length > 0) {
-    const currentId = queue.shift()!
+    const { id: currentId, hint: parentHint } = queue.shift()!
 
     const res = await drive.files.list({
       q: `'${currentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-      fields: 'files(id)',
+      fields: 'files(id, name)',
       pageSize: 100,
       supportsAllDrives: true,
       includeItemsFromAllDrives: true,
     })
 
     for (const folder of res.data.files ?? []) {
-      if (folder.id && !ids.has(folder.id)) {
-        ids.add(folder.id)
-        queue.push(folder.id) // recurse into nested subfolders
-      }
+      if (!folder.id || ids.has(folder.id)) continue
+      ids.add(folder.id)
+
+      // Infer category from the subfolder's own name; inherit parent's if unknown
+      const hint = classifyFolderName(folder.name ?? '') ?? parentHint
+      if (hint) categoryMap.set(folder.id, hint)
+
+      queue.push({ id: folder.id, hint })
     }
   }
 
-  return ids
+  return { ids, categoryMap }
 }
 
 /** Get the Drive start page token to use for future change tracking */
@@ -145,8 +189,8 @@ async function fetchChanges(
   const changes: DriveChangeRecord[] = []
   let currentToken = pageToken
 
-  // Build the full folder hierarchy once so we can match files in subfolders
-  const folderIds = await getFolderHierarchyIds(folderId)
+  // Build the full folder hierarchy + category map once
+  const { ids: folderIds, categoryMap } = await getFolderInfo(folderId)
 
   while (true) {
     const res = await drive.changes.list({
@@ -175,9 +219,13 @@ async function fetchChanges(
       // Only process files whose direct parent is within our folder hierarchy
       // (handles files in root folder AND any subfolder depth)
       const parents = file.parents ?? []
-      if (!parents.some(p => folderIds.has(p))) continue
+      const matchedParent = parents.find(p => folderIds.has(p))
+      if (!matchedParent) continue
 
       const record = toFileRecord(file)
+      // Stamp the authoritative folder category so classifyDocument falls back to it
+      const hint = categoryMap.get(matchedParent)
+      if (hint) record.folderHint = hint
       changes.push({ type: 'added', fileId, file: record })
     }
 

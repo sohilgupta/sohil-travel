@@ -50,7 +50,14 @@ const CATEGORY_PATTERNS: Array<{ pattern: RegExp; category: DocumentCategory }> 
   { pattern: /insurance|policy|coverage/i, category: 'insurance' },
 ]
 
-function classifyDocument(filename: string, text: string): DocumentCategory {
+function classifyDocument(
+  filename: string,
+  text: string,
+  folderHint?: DocumentCategory
+): DocumentCategory {
+  // Drive subfolder name is the most reliable signal — use it directly
+  if (folderHint) return folderHint
+
   const combined = `${filename} ${text.slice(0, 2000)}`
   for (const { pattern, category } of CATEGORY_PATTERNS) {
     if (pattern.test(combined)) return category
@@ -264,7 +271,8 @@ export async function processFile(file: DriveFileRecord): Promise<ProcessResult>
     }
 
     // 7. Classify and extract metadata
-    const category = classifyDocument(filename, parsedText)
+    // folderHint (from Drive subfolder name) takes priority over text patterns
+    const category = classifyDocument(filename, parsedText, file.folderHint)
     const metadata = extractMetadata(parsedText, category)
 
     // 8. Upload to Supabase private bucket — never public

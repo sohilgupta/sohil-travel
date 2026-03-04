@@ -11,6 +11,8 @@ export interface DriveFileRecord {
   modifiedTime: string
   md5Checksum: string | null
   trashed: boolean
+  /** Category inferred from the Drive subfolder the file lives in */
+  folderHint?: import('@/lib/types').DocumentCategory
 }
 
 export interface DriveChangeRecord {
